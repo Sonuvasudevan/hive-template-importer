@@ -13,9 +13,10 @@ type SpectoraRow = {
   "Order (w/i item)"?: number | string;
 };
 
-type SkippedRow = {
+type ImportWarning = {
   row: number;
   reason: string;
+  details?: string;
 };
 
 export async function POST(request: Request) {
@@ -63,6 +64,19 @@ export async function POST(request: Request) {
       );
     }
 
+    const fileName = uploadedFile.name;
+
+    if (!/\.(xls|xlsx)$/i.test(fileName)) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            "Unsupported file type. Please upload a Spectora .xls or .xlsx spreadsheet export.",
+        },
+        { status: 400 }
+      );
+    }
+
     // --------------------------------------------------
     // 3. READ EXCEL FILE
     // --------------------------------------------------
@@ -103,10 +117,33 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 4. VALIDATE / TRACK UNSUPPORTED ROWS
+    // 4. VALIDATE EXPECTED SPECTORA COLUMNS
     // --------------------------------------------------
 
-    const skippedRows: SkippedRow[] = [];
+    const firstRow = rows[0] as Record<string, unknown>;
+
+    const hasSectionColumn =
+      Object.prototype.hasOwnProperty.call(firstRow, "Section Name");
+
+    const hasItemColumn =
+      Object.prototype.hasOwnProperty.call(firstRow, "Item Name");
+
+    if (!hasSectionColumn || !hasItemColumn) {
+      return NextResponse.json(
+        {
+          success: false,
+          error:
+            'This spreadsheet does not look like a supported Spectora HTML-text export. Expected "Section Name" and "Item Name" columns.',
+        },
+        { status: 400 }
+      );
+    }
+
+    // --------------------------------------------------
+    // 5. TRACK SKIPPED / PARTIALLY SUPPORTED CONTENT
+    // --------------------------------------------------
+
+    const warnings: ImportWarning[] = [];
 
     rows.forEach((row, index) => {
       const sectionName = String(
@@ -125,35 +162,62 @@ export async function POST(request: Request) {
         row["Comment Text"] || ""
       ).trim();
 
-      // +2 because spreadsheet row 1 contains headers
+      // +2 because spreadsheet row 1 contains headers.
       const spreadsheetRow = index + 2;
 
       if (!sectionName) {
-        skippedRows.push({
+        warnings.push({
           row: spreadsheetRow,
-          reason: "Missing Section Name",
+          reason: "Row skipped: missing Section Name",
         });
+
         return;
       }
 
       if (!itemName) {
-        skippedRows.push({
+        warnings.push({
           row: spreadsheetRow,
-          reason: "Missing Item Name",
+          reason: "Row skipped: missing Item Name",
         });
+
         return;
       }
 
       if (!commentText && !commentName) {
-        skippedRows.push({
+        warnings.push({
           row: spreadsheetRow,
-          reason: "Missing Comment Text and Comment Name",
+          reason: "No comment content",
+          details:
+            "The section and item can still be imported, but this row contains neither Comment Text nor Comment Name.",
+        });
+
+        return;
+      }
+
+      /*
+       * Our current comments table has one text_html field rather than
+       * separate Comment Name and Comment Text fields.
+       *
+       * When both values exist, Comment Text is preserved as the editable
+       * comment body. Comment Name is reported explicitly as unsupported
+       * metadata instead of being silently discarded.
+       */
+      if (
+        commentName &&
+        commentText &&
+        commentName !== commentText
+      ) {
+        warnings.push({
+          row: spreadsheetRow,
+          reason:
+            "Comment Name is not stored as a separate field",
+          details: `Comment Name: ${commentName}`,
         });
       }
     });
 
     // --------------------------------------------------
-    // 5. CREATE TEMPLATE
+    // 6. CREATE TEMPLATE
     // --------------------------------------------------
 
     const templateName = uploadedFile.name.replace(
@@ -171,7 +235,10 @@ export async function POST(request: Request) {
         .single();
 
     if (templateError || !template) {
-      console.error("Template insert error:", templateError);
+      console.error(
+        "Template insert error:",
+        templateError
+      );
 
       throw new Error(
         `Template insert failed: ${
@@ -181,7 +248,7 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 6. CREATE UNIQUE SECTIONS
+    // 7. CREATE UNIQUE SECTIONS
     // --------------------------------------------------
 
     const sectionNames = Array.from(
@@ -226,7 +293,7 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 7. CREATE UNIQUE ITEMS
+    // 8. CREATE UNIQUE ITEMS
     // --------------------------------------------------
 
     const itemIdMap = new Map<string, string>();
@@ -288,10 +355,12 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 8. CREATE COMMENTS
+    // 9. CREATE COMMENTS
     // --------------------------------------------------
 
     let commentCount = 0;
+    const commentCounters =
+      new Map<string, number>();
 
     for (const row of rows) {
       const sectionName = String(
@@ -326,12 +395,15 @@ export async function POST(request: Request) {
       }
 
       /*
-       * The database stores comment content in text_html.
+       * Preserve Comment Text when available.
        *
-       * If Comment Text exists, preserve it.
-       * Otherwise use Comment Name.
+       * Some Spectora rows may only contain Comment Name.
+       * In that case Comment Name becomes the stored content.
+       *
+       * When both exist, Comment Name is surfaced in the
+       * warnings returned by this endpoint because our
+       * current schema does not model it separately.
        */
-
       const textHtml = commentText || commentName;
 
       if (!textHtml) {
@@ -345,10 +417,16 @@ export async function POST(request: Request) {
           ? rawOrder
           : Number(rawOrder);
 
+      const fallbackOrder =
+        commentCounters.get(itemKey) ?? 0;
+
       const orderIndex =
+        rawOrder !== "" &&
+        rawOrder !== null &&
+        rawOrder !== undefined &&
         Number.isFinite(parsedOrder)
           ? parsedOrder
-          : commentCount;
+          : fallbackOrder;
 
       const { error: commentError } =
         await supabase
@@ -362,36 +440,54 @@ export async function POST(request: Request) {
 
       if (commentError) {
         throw new Error(
-          `Comment "${commentName}" failed: ${commentError.message}`
+          `Comment "${
+            commentName || commentText
+          }" failed: ${commentError.message}`
         );
       }
+
+      commentCounters.set(
+        itemKey,
+        fallbackOrder + 1
+      );
 
       commentCount++;
     }
 
     // --------------------------------------------------
-    // 9. SUCCESS
+    // 10. SUCCESS
     // --------------------------------------------------
 
     return NextResponse.json({
       success: true,
+
       message:
-        skippedRows.length > 0
-          ? `Spectora template imported successfully with ${skippedRows.length} skipped row(s).`
-          : "Spectora template imported successfully with no skipped rows.",
+        warnings.length > 0
+          ? `Spectora template imported successfully with ${warnings.length} warning(s).`
+          : "Spectora template imported successfully with no warnings.",
+
       template: {
         id: template.id,
         name: template.name,
       },
+
       imported: {
         sections: sectionNames.length,
         items: itemIdMap.size,
         comments: commentCount,
       },
-      skipped: {
-        count: skippedRows.length,
-        rows: skippedRows,
+
+      warnings: {
+        count: warnings.length,
+        rows: warnings,
       },
+
+      limitations: [
+        "The importer supports Spectora .xls/.xlsx HTML-text spreadsheet exports.",
+        "Comment HTML is preserved in the comment text_html field.",
+        "The current data model does not store Comment Name separately when Comment Text is also present.",
+        "Unsupported or incomplete rows are reported as import warnings instead of being silently ignored.",
+      ],
     });
   } catch (err: unknown) {
     console.error("IMPORT ERROR:", err);

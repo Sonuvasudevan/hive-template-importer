@@ -9,17 +9,18 @@ type Template = {
   updated_at?: string;
 };
 
-type SkippedRow = {
+type WarningRow = {
   row: number;
   reason: string;
+  details?: string;
 };
 
 type ImportReport = {
   sections: number;
   items: number;
   comments: number;
-  skippedCount: number;
-  skippedRows: SkippedRow[];
+  warningCount: number;
+  warningRows: WarningRow[];
 };
 
 export default function Home() {
@@ -38,6 +39,8 @@ export default function Home() {
 
   const [duplicatingId, setDuplicatingId] =
     useState<string | null>(null);
+
+  const [showWarnings, setShowWarnings] = useState(false);
 
   // --------------------------------------------------
   // LOAD SAVED TEMPLATES
@@ -92,6 +95,7 @@ export default function Home() {
     setError(null);
     setSuccessMessage(null);
     setImportReport(null);
+    setShowWarnings(false);
 
     try {
       const formData = new FormData();
@@ -111,24 +115,20 @@ export default function Home() {
         );
       }
 
-      // Use the message returned by the importer API
       setSuccessMessage(
         data.message || "Template imported successfully!"
       );
 
-      // Show exactly what was imported and what was skipped
       setImportReport({
         sections: data.imported?.sections ?? 0,
         items: data.imported?.items ?? 0,
         comments: data.imported?.comments ?? 0,
-        skippedCount: data.skipped?.count ?? 0,
-        skippedRows: data.skipped?.rows ?? [],
+        warningCount: data.warnings?.count ?? 0,
+        warningRows: data.warnings?.rows ?? [],
       });
 
-      // Reload templates without refreshing the whole page
       await loadTemplates();
 
-      // Allow the same file to be selected again
       e.target.value = "";
     } catch (err) {
       const message =
@@ -139,7 +139,6 @@ export default function Home() {
       setError(message);
       setImportReport(null);
 
-      // Reset file input even if import fails
       e.target.value = "";
     } finally {
       setLoading(false);
@@ -151,8 +150,7 @@ export default function Home() {
   // --------------------------------------------------
 
   const handleEdit = (templateId: string) => {
-    window.location.href =
-      `/templates/${templateId}`;
+    window.location.href = `/templates/${templateId}`;
   };
 
   // --------------------------------------------------
@@ -162,7 +160,6 @@ export default function Home() {
   const handleDuplicate = async (
     template: Template
   ) => {
-    // Prevent duplicate clicks while request is running
     if (duplicatingId) return;
 
     const confirmed = window.confirm(
@@ -176,6 +173,7 @@ export default function Home() {
       setError(null);
       setSuccessMessage(null);
       setImportReport(null);
+      setShowWarnings(false);
 
       const res = await fetch(
         `/api/templates/${template.id}/duplicate`,
@@ -199,7 +197,6 @@ export default function Home() {
         `"${template.name}" duplicated successfully!`
       );
 
-      // Reload the list so the new template appears
       await loadTemplates();
     } catch (err) {
       const message =
@@ -321,33 +318,121 @@ export default function Home() {
             {importReport.comments}
           </p>
 
-          {importReport.skippedCount === 0 ? (
-            <p
+          {importReport.warningCount === 0 ? (
+            <div
               style={{
-                marginBottom: 0,
+                background: "#e8f5e9",
+                border: "1px solid #81c784",
+                borderRadius: "6px",
+                padding: "12px",
+                color: "#1b5e20",
               }}
             >
-              No rows were skipped during import.
-            </p>
+              No import warnings.
+            </div>
           ) : (
-            <div>
-              <p>
+            <div
+              style={{
+                background: "#fff8e1",
+                border: "1px solid #f9a825",
+                borderRadius: "6px",
+                padding: "12px",
+              }}
+            >
+              <p
+                style={{
+                  marginTop: 0,
+                  marginBottom: "8px",
+                  color: "#7a5600",
+                }}
+              >
                 <strong>
-                  {importReport.skippedCount} row(s) were
-                  skipped:
+                  {importReport.warningCount} import warning(s)
                 </strong>
               </p>
 
-              <ul>
-                {importReport.skippedRows.map(
-                  (skippedRow, index) => (
-                    <li key={`${skippedRow.row}-${index}`}>
-                      Spreadsheet row {skippedRow.row}:{" "}
-                      {skippedRow.reason}
-                    </li>
-                  )
-                )}
-              </ul>
+              <p
+                style={{
+                  marginTop: 0,
+                  marginBottom: "12px",
+                  color: "#5f4b00",
+                }}
+              >
+                Some spreadsheet information is not stored
+                separately by the current data model. The template
+                was still imported successfully. You can review the
+                affected rows below.
+              </p>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setShowWarnings((current) => !current)
+                }
+                style={{
+                  padding: "8px 12px",
+                  cursor: "pointer",
+                  fontWeight: "bold",
+                  color: "#111",
+                  background: "#ffffff",
+                  border: "1px solid #777",
+                  borderRadius: "5px",
+                }}
+              >
+                {showWarnings
+                  ? "Hide warning details"
+                  : `Show warning details (${importReport.warningCount})`}
+              </button>
+
+              {showWarnings && (
+                <div
+                  style={{
+                    marginTop: "12px",
+                    maxHeight: "320px",
+                    overflowY: "auto",
+                    background: "#fff",
+                    color: "#111",
+                    border: "1px solid #ddd",
+                    borderRadius: "6px",
+                    padding: "10px 14px",
+                  }}
+                >
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: "20px",
+                    }}
+                  >
+                    {importReport.warningRows.map(
+                      (warning, index) => (
+                        <li
+                          key={`${warning.row}-${index}`}
+                          style={{
+                            marginBottom: "8px",
+                          }}
+                        >
+                          <strong>
+                            Spreadsheet row {warning.row}:
+                          </strong>{" "}
+                          {warning.reason}
+
+                          {warning.details && (
+                            <div
+                              style={{
+                                marginTop: "3px",
+                                fontSize: "0.9rem",
+                                color: "#555",
+                              }}
+                            >
+                              {warning.details}
+                            </div>
+                          )}
+                        </li>
+                      )
+                    )}
+                  </ul>
+                </div>
+              )}
             </div>
           )}
         </div>
