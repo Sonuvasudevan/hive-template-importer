@@ -13,6 +13,11 @@ type SpectoraRow = {
   "Order (w/i item)"?: number | string;
 };
 
+type SkippedRow = {
+  row: number;
+  reason: string;
+};
+
 export async function POST(request: Request) {
   try {
     // --------------------------------------------------
@@ -50,7 +55,10 @@ export async function POST(request: Request) {
 
     if (!(uploadedFile instanceof File)) {
       return NextResponse.json(
-        { error: "No valid file provided" },
+        {
+          success: false,
+          error: "No valid file provided",
+        },
         { status: 400 }
       );
     }
@@ -69,7 +77,10 @@ export async function POST(request: Request) {
 
     if (!sheetName) {
       return NextResponse.json(
-        { error: "No worksheet found in Excel file" },
+        {
+          success: false,
+          error: "No worksheet found in Excel file",
+        },
         { status: 400 }
       );
     }
@@ -83,13 +94,66 @@ export async function POST(request: Request) {
 
     if (rows.length === 0) {
       return NextResponse.json(
-        { error: "The Excel file contains no data" },
+        {
+          success: false,
+          error: "The Excel file contains no data",
+        },
         { status: 400 }
       );
     }
 
     // --------------------------------------------------
-    // 4. CREATE TEMPLATE
+    // 4. VALIDATE / TRACK UNSUPPORTED ROWS
+    // --------------------------------------------------
+
+    const skippedRows: SkippedRow[] = [];
+
+    rows.forEach((row, index) => {
+      const sectionName = String(
+        row["Section Name"] || ""
+      ).trim();
+
+      const itemName = String(
+        row["Item Name"] || ""
+      ).trim();
+
+      const commentName = String(
+        row["Comment Name"] || ""
+      ).trim();
+
+      const commentText = String(
+        row["Comment Text"] || ""
+      ).trim();
+
+      // +2 because spreadsheet row 1 contains headers
+      const spreadsheetRow = index + 2;
+
+      if (!sectionName) {
+        skippedRows.push({
+          row: spreadsheetRow,
+          reason: "Missing Section Name",
+        });
+        return;
+      }
+
+      if (!itemName) {
+        skippedRows.push({
+          row: spreadsheetRow,
+          reason: "Missing Item Name",
+        });
+        return;
+      }
+
+      if (!commentText && !commentName) {
+        skippedRows.push({
+          row: spreadsheetRow,
+          reason: "Missing Comment Text and Comment Name",
+        });
+      }
+    });
+
+    // --------------------------------------------------
+    // 5. CREATE TEMPLATE
     // --------------------------------------------------
 
     const templateName = uploadedFile.name.replace(
@@ -117,20 +181,26 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 5. CREATE UNIQUE SECTIONS
+    // 6. CREATE UNIQUE SECTIONS
     // --------------------------------------------------
 
     const sectionNames = Array.from(
       new Set(
         rows
-          .map((row) => String(row["Section Name"] || "").trim())
+          .map((row) =>
+            String(row["Section Name"] || "").trim()
+          )
           .filter(Boolean)
       )
     );
 
     const sectionIdMap = new Map<string, string>();
 
-    for (let sectionIndex = 0; sectionIndex < sectionNames.length; sectionIndex++) {
+    for (
+      let sectionIndex = 0;
+      sectionIndex < sectionNames.length;
+      sectionIndex++
+    ) {
       const sectionName = sectionNames[sectionIndex];
 
       const { data: section, error: sectionError } =
@@ -156,7 +226,7 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 6. CREATE UNIQUE ITEMS
+    // 7. CREATE UNIQUE ITEMS
     // --------------------------------------------------
 
     const itemIdMap = new Map<string, string>();
@@ -183,7 +253,6 @@ export async function POST(request: Request) {
 
       const itemKey = `${sectionName}|||${itemName}`;
 
-      // Already created
       if (itemIdMap.has(itemKey)) {
         continue;
       }
@@ -219,7 +288,7 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 7. CREATE COMMENTS
+    // 8. CREATE COMMENTS
     // --------------------------------------------------
 
     let commentCount = 0;
@@ -257,29 +326,19 @@ export async function POST(request: Request) {
       }
 
       /*
-       * Your comments table has:
+       * The database stores comment content in text_html.
        *
-       * item_id
-       * text_html
-       * category
-       * order_index
-       *
-       * There is NO separate "Comment Name" column.
-       *
-       * Therefore:
-       * - If Comment Text exists, save that.
-       * - Otherwise save Comment Name.
+       * If Comment Text exists, preserve it.
+       * Otherwise use Comment Name.
        */
 
-      const textHtml =
-        commentText || commentName;
+      const textHtml = commentText || commentName;
 
       if (!textHtml) {
         continue;
       }
 
-      const rawOrder =
-        row["Order (w/i item)"];
+      const rawOrder = row["Order (w/i item)"];
 
       const parsedOrder =
         typeof rawOrder === "number"
@@ -311,12 +370,15 @@ export async function POST(request: Request) {
     }
 
     // --------------------------------------------------
-    // 8. SUCCESS
+    // 9. SUCCESS
     // --------------------------------------------------
 
     return NextResponse.json({
       success: true,
-      message: "Spectora template imported successfully",
+      message:
+        skippedRows.length > 0
+          ? `Spectora template imported successfully with ${skippedRows.length} skipped row(s).`
+          : "Spectora template imported successfully with no skipped rows.",
       template: {
         id: template.id,
         name: template.name,
@@ -325,6 +387,10 @@ export async function POST(request: Request) {
         sections: sectionNames.length,
         items: itemIdMap.size,
         comments: commentCount,
+      },
+      skipped: {
+        count: skippedRows.length,
+        rows: skippedRows,
       },
     });
   } catch (err: unknown) {

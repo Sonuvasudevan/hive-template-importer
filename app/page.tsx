@@ -9,13 +9,35 @@ type Template = {
   updated_at?: string;
 };
 
+type SkippedRow = {
+  row: number;
+  reason: string;
+};
+
+type ImportReport = {
+  sections: number;
+  items: number;
+  comments: number;
+  skippedCount: number;
+  skippedRows: SkippedRow[];
+};
+
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [templatesLoading, setTemplatesLoading] = useState(true);
+
   const [error, setError] = useState<string | null>(null);
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const [successMessage, setSuccessMessage] =
+    useState<string | null>(null);
+
+  const [importReport, setImportReport] =
+    useState<ImportReport | null>(null);
+
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [duplicatingId, setDuplicatingId] = useState<string | null>(null);
+
+  const [duplicatingId, setDuplicatingId] =
+    useState<string | null>(null);
 
   // --------------------------------------------------
   // LOAD SAVED TEMPLATES
@@ -33,7 +55,9 @@ export default function Home() {
       const data = await res.json();
 
       if (!res.ok || !data.success) {
-        throw new Error(data.error || "Could not load templates");
+        throw new Error(
+          data.error || "Could not load templates"
+        );
       }
 
       setTemplates(data.templates || []);
@@ -67,6 +91,7 @@ export default function Home() {
     setLoading(true);
     setError(null);
     setSuccessMessage(null);
+    setImportReport(null);
 
     try {
       const formData = new FormData();
@@ -81,21 +106,38 @@ export default function Home() {
       const data = await res.json();
 
       if (!res.ok || !data.success) {
-        throw new Error(data.error || "Upload failed");
+        throw new Error(
+          data.error || "Upload failed"
+        );
       }
 
-      setSuccessMessage("Template imported successfully!");
+      // Use the message returned by the importer API
+      setSuccessMessage(
+        data.message || "Template imported successfully!"
+      );
 
-      // Reload templates without refreshing whole page
+      // Show exactly what was imported and what was skipped
+      setImportReport({
+        sections: data.imported?.sections ?? 0,
+        items: data.imported?.items ?? 0,
+        comments: data.imported?.comments ?? 0,
+        skippedCount: data.skipped?.count ?? 0,
+        skippedRows: data.skipped?.rows ?? [],
+      });
+
+      // Reload templates without refreshing the whole page
       await loadTemplates();
 
       // Allow the same file to be selected again
       e.target.value = "";
     } catch (err) {
       const message =
-        err instanceof Error ? err.message : "Upload failed";
+        err instanceof Error
+          ? err.message
+          : "Upload failed";
 
       setError(message);
+      setImportReport(null);
 
       // Reset file input even if import fails
       e.target.value = "";
@@ -109,14 +151,17 @@ export default function Home() {
   // --------------------------------------------------
 
   const handleEdit = (templateId: string) => {
-    window.location.href = `/templates/${templateId}`;
+    window.location.href =
+      `/templates/${templateId}`;
   };
 
   // --------------------------------------------------
   // DUPLICATE TEMPLATE
   // --------------------------------------------------
 
-  const handleDuplicate = async (template: Template) => {
+  const handleDuplicate = async (
+    template: Template
+  ) => {
     // Prevent duplicate clicks while request is running
     if (duplicatingId) return;
 
@@ -130,6 +175,7 @@ export default function Home() {
       setDuplicatingId(template.id);
       setError(null);
       setSuccessMessage(null);
+      setImportReport(null);
 
       const res = await fetch(
         `/api/templates/${template.id}/duplicate`,
@@ -185,8 +231,8 @@ export default function Home() {
       </h1>
 
       <p>
-        Upload Spectora .xls/.xlsx exports, edit template content,
-        and duplicate templates independently.
+        Upload Spectora .xls/.xlsx exports, edit template
+        content, and duplicate templates independently.
       </p>
 
       {/* IMPORT AREA */}
@@ -214,7 +260,9 @@ export default function Home() {
         <label
           htmlFor="file-upload"
           style={{
-            cursor: loading ? "not-allowed" : "pointer",
+            cursor: loading
+              ? "not-allowed"
+              : "pointer",
             color: "#0070f3",
             fontWeight: "bold",
             opacity: loading ? 0.6 : 1,
@@ -236,10 +284,72 @@ export default function Home() {
             padding: "12px",
             border: "1px solid #2e7d32",
             borderRadius: "6px",
-            marginBottom: "20px",
+            marginBottom: "12px",
           }}
         >
           {successMessage}
+        </div>
+      )}
+
+      {/* IMPORT REPORT */}
+
+      {importReport && (
+        <div
+          style={{
+            border: "1px solid #777",
+            padding: "16px",
+            borderRadius: "6px",
+            marginBottom: "20px",
+          }}
+        >
+          <h3
+            style={{
+              marginTop: 0,
+            }}
+          >
+            Import Report
+          </h3>
+
+          <p>
+            <strong>Sections:</strong>{" "}
+            {importReport.sections}
+            {" | "}
+            <strong>Items:</strong>{" "}
+            {importReport.items}
+            {" | "}
+            <strong>Comments:</strong>{" "}
+            {importReport.comments}
+          </p>
+
+          {importReport.skippedCount === 0 ? (
+            <p
+              style={{
+                marginBottom: 0,
+              }}
+            >
+              No rows were skipped during import.
+            </p>
+          ) : (
+            <div>
+              <p>
+                <strong>
+                  {importReport.skippedCount} row(s) were
+                  skipped:
+                </strong>
+              </p>
+
+              <ul>
+                {importReport.skippedRows.map(
+                  (skippedRow, index) => (
+                    <li key={`${skippedRow.row}-${index}`}>
+                      Spreadsheet row {skippedRow.row}:{" "}
+                      {skippedRow.reason}
+                    </li>
+                  )
+                )}
+              </ul>
+            </div>
+          )}
         </div>
       )}
 
@@ -330,8 +440,12 @@ export default function Home() {
                 >
                   <button
                     type="button"
-                    onClick={() => handleEdit(template.id)}
-                    disabled={duplicatingId === template.id}
+                    onClick={() =>
+                      handleEdit(template.id)
+                    }
+                    disabled={
+                      duplicatingId === template.id
+                    }
                     style={{
                       padding: "8px 14px",
                       cursor:
@@ -356,7 +470,9 @@ export default function Home() {
                           ? "not-allowed"
                           : "pointer",
                       opacity:
-                        duplicatingId !== null ? 0.6 : 1,
+                        duplicatingId !== null
+                          ? 0.6
+                          : 1,
                     }}
                   >
                     {duplicatingId === template.id
