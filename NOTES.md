@@ -15,6 +15,8 @@ The application allows a user to:
 - Duplicate a template.
 - Edit the duplicated template independently without changing the original.
 - Retrieve saved templates after reopening the application.
+- See visible warnings when exported information is present but is not fully represented by the current data model.
+- See clear errors when an invalid spreadsheet cannot be imported.
 
 ## Sample Input
 
@@ -41,6 +43,8 @@ The importer is designed for Spectora's **HTML-text spreadsheet export format** 
 
 The importer reads the spreadsheet structure and maps supported Spectora content into templates, sections, items, and comments instead of storing the entire spreadsheet as one opaque HTML document.
 
+The importer validates the spreadsheet structure before importing it. Invalid or unreadable spreadsheet input is rejected with a visible error.
+
 ## Data Model
 
 The imported template is stored as structured data rather than as one large HTML document.
@@ -59,6 +63,32 @@ The database schema used by the project is included in:
 
 `supabase/schema.sql`
 
+## Import Mapping and Preservation
+
+The importer maps the Spectora spreadsheet into the structured database hierarchy.
+
+For the included InterNACHI Residential sample, the imported result contains:
+
+- 13 sections
+- 69 items
+- 392 comments
+
+Section and item ordering is preserved using the order in which the records appear in the spreadsheet.
+
+Comment ordering uses Spectora's comment order information when available.
+
+Comment HTML/text is stored in the `text_html` field.
+
+The importer also distinguishes between content that can be stored directly and information that is present in the spreadsheet but is not represented separately by the current schema.
+
+For example, when both `Comment Name` and `Comment Text` are present, the current comment model stores the comment text but does not have a separate `Comment Name` field.
+
+Instead of silently hiding this limitation, the importer reports the affected spreadsheet rows as visible import warnings. The warning details include the unsupported `Comment Name` value so the information remains visible to the user.
+
+For the included InterNACHI Residential sample, the application currently reports 309 such import warnings.
+
+The warning list is collapsed by default to keep the interface readable and can be expanded to inspect individual affected rows and values.
+
 ## How I Checked My Work
 
 I tested the complete workflow using the included InterNACHI Residential Spectora export.
@@ -66,8 +96,12 @@ I tested the complete workflow using the included InterNACHI Residential Spector
 I verified that:
 
 - The spreadsheet can be imported successfully.
-- Imported sections, items, and comments are displayed.
 - The imported template contains 13 sections.
+- The imported template contains 69 items.
+- The imported template contains 392 comments.
+- Unsupported information is reported through visible import warnings.
+- Warning details identify the affected spreadsheet rows and unsupported values.
+- Imported sections, items, and comments are displayed.
 - Edits can be saved and retrieved.
 - Saved data remains available after reopening the application.
 - A template can be duplicated.
@@ -75,6 +109,8 @@ I verified that:
 - Editing the copy does not modify the original.
 - Data remains stored in the Supabase backend.
 - An invalid `.xlsx` file is rejected with a visible error message instead of being imported.
+- The application builds successfully using `npm run build`.
+- The final application works from the deployed Vercel production URL.
 
 For the independent-copy test, I edited a comment in the original template and then created a duplicate. I changed the corresponding comment in the duplicate to **"COPY INDEPENDENCE TEST"** and verified that the original retained its own value.
 
@@ -98,9 +134,15 @@ The application only works with information actually available in the uploaded e
 
 ### Present but not fully supported
 
-Some exported fields can contain rich HTML or formatting. The importer may preserve this content as imported text/HTML, but the current editor does not attempt to recreate every rich-text formatting feature available in Spectora.
+Information may be present in the spreadsheet but not have a dedicated field in the current application data model.
 
-This is treated as an importer/editor limitation rather than assuming that the information was missing from the original export.
+For example, `Comment Name` may be present alongside `Comment Text`. The current schema does not store `Comment Name` as a separate comment property when comment text is also present.
+
+The application treats this as **unsupported information rather than missing information**.
+
+Affected rows and values are therefore exposed through visible import warnings instead of being silently ignored.
+
+Some exported fields can also contain rich HTML or formatting. The importer preserves supported HTML/text content in `text_html`, but the current editor does not attempt to recreate every rich-text formatting feature available in Spectora.
 
 Invalid or unreadable spreadsheet input is rejected with a visible error rather than being silently accepted.
 
@@ -108,31 +150,49 @@ Invalid or unreadable spreadsheet input is rejected with a visible error rather 
 
 The project focuses on the required template-import and editing workflow rather than recreating the complete Spectora or Hive Inspect product.
 
+The current data model does not store `Comment Name` separately when `Comment Text` is also present. These values are surfaced through visible import warnings.
+
 Rich HTML contained inside exported fields may be preserved as imported content rather than being fully converted into a visual rich-text editing experience.
 
-The importer is intended for Spectora HTML-text spreadsheet exports. Other spreadsheet structures or unrelated Excel files are not guaranteed to import correctly.
+The importer is intended for Spectora HTML-text spreadsheet exports with the expected Spectora column structure. Other spreadsheet structures or unrelated Excel files are not guaranteed to import correctly.
 
 The editor focuses on section names, item names, and comment text rather than providing a complete rich-text template editing experience.
 
-The application currently uses a simple take-home/demo access model without implementing a complete user authentication and authorization system. A production application would require appropriate Supabase Row Level Security policies and user-level access controls.
+The application currently uses a simple take-home/demo access model without implementing a complete user authentication and authorization system.
+
+A production application would require appropriate Supabase Row Level Security policies and user-level access controls.
 
 ## What I Left Out and Why
 
-I deliberately focused on faithful importing, editing, persistence, independent template copies, and clear import failure handling.
+I deliberately focused on faithful importing, structured storage, editing, persistence, independent template copies, transparent unsupported-content handling, and clear import failure handling.
 
 Features such as inspection report creation, scheduling, payments, homeowner portals, and other inspection-management functionality were not implemented because they are outside the scope of this assignment.
 
 I also kept the editor focused on the core workflow instead of attempting to reproduce every feature of a full inspection-template editor within the available development time.
 
-Full rich-text editing was intentionally left out. The application preserves the imported content while keeping the editing interface simple and focused on the required fields.
+Full rich-text editing was intentionally left out. The application preserves supported imported content while keeping the editing interface simple and focused on the required fields.
+
+A complete production authentication and authorization system was also left out because this project is a take-home demonstration focused on the importer and editor workflow.
 
 ## Meaningful Improvement
 
-After completing the core workflow, I focused on making import failures clear to the user.
+After completing the core import, edit, persistence, and duplication workflow, I focused on making import behavior more transparent to the user.
 
-Instead of silently creating an incomplete template when the uploaded spreadsheet cannot be read, the application rejects invalid input and displays a visible error message.
+The importer now distinguishes between successful imports, unsupported information, and invalid input.
 
-This makes the import process easier to understand and helps prevent invalid template data from being stored in the backend.
+When information is present in the spreadsheet but is not represented separately by the current data model, the application reports visible import warnings rather than silently hiding the limitation.
+
+The warning details show the affected spreadsheet row and unsupported value. The warnings are collapsed by default so a large number of warnings does not overwhelm the interface.
+
+When an uploaded spreadsheet cannot be read or does not contain the required structure, the application rejects the import and displays a clear error instead of silently creating an incomplete template.
+
+This improvement makes it easier for a user to understand exactly what was imported, what was not fully supported, and why.
+
+## Hive Inspect Trial
+
+As part of understanding the product workflow, I also created a sample inspection in Hive Inspect, attached a residential template, and published a sample report.
+
+This helped me understand how templates connect to the broader inspection and report workflow and provided context for keeping this take-home implementation focused on template importing and editing.
 
 ## Tools and Credits
 
@@ -147,8 +207,8 @@ The project started from a standard `create-next-app` project.
 
 AI coding tools were used during development to help understand requirements, generate and refine implementation ideas, troubleshoot issues, and review the solution.
 
-I reviewed and tested the resulting implementation and verified the main import, edit, persistence, duplication, and failure-case workflows.
+I reviewed and tested the resulting implementation and verified the main import, edit, persistence, duplication, unsupported-content, and failure-case workflows.
 
 ## Approximate Time Spent
 
-Approximately two focused days were spent exploring the products, understanding the Spectora export structure, implementing the importer and editor, testing persistence and duplication, handling failure cases, documenting limitations, and preparing the project for submission.
+Approximately two focused days were spent exploring the products, understanding the Spectora export structure, implementing the importer and editor, testing persistence and duplication, handling unsupported content and failure cases, documenting limitations, and preparing the project for submission.
